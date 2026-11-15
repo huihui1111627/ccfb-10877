@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LogScope — 日志模式分析平台</title>
+<style>
+:root {
+  --bg: #0f1420; --panel: #171e2e; --panel2: #1e2740; --line: #2a3550;
+  --text: #dbe4f5; --muted: #8595b3; --accent: #4f8cff; --ok: #3ecf8e;
+  --warn: #f5a623; --err: #ff5d6c; --purple: #a78bfa;
+}
+* { box-sizing: border-box; }
+body { margin:0; font: 13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--text); }
+header { display:flex; align-items:center; gap:16px; padding:10px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+header h1 { font-size:16px; margin:0; letter-spacing:1px; }
+header h1 span { color:var(--accent); }
+.stats { display:flex; gap:18px; margin-left:auto; flex-wrap:wrap; }
+.stat { text-align:right; }
+.stat b { display:block; font-size:16px; }
+.stat small { color:var(--muted); }
+nav { display:flex; gap:4px; padding:0 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+nav button { background:none; border:none; color:var(--muted); padding:10px 16px; cursor:pointer; font-size:13px; border-bottom:2px solid transparent; }
+nav button.active { color:var(--text); border-bottom-color:var(--accent); }
+main { padding:18px 20px; }
+.page { display:none; }
+.page.active { display:block; }
+table { width:100%; border-collapse:collapse; font-size:12.5px; }
+th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--panel); }
+tr:hover td { background:var(--panel2); }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin-bottom:16px; }
+.panel h3 { margin:0 0 10px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; }
+.row { display:flex; gap:16px; flex-wrap:wrap; }
+.row > .panel { flex:1; min-width:280px; }
+.badge { display:inline-block; padding:1px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+.b-ERROR,.b-FATAL { background:rgba(255,93,108,.18); color:var(--err); }
+.b-WARN { background:rgba(245,166,35,.18); color:var(--warn); }
+.b-INFO { background:rgba(62,207,142,.15); color:var(--ok); }
+.b-spike { background:rgba(255,93,108,.18); color:var(--err); }
+.b-drop { background:rgba(245,166,35,.18); color:var(--warn); }
+.b-new_template { background:rgba(167,139,250,.18); color:var(--purple); }
+.controls { display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+select,input,button.btn { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font-size:12.5px; }
+button.btn { cursor:pointer; }
+button.btn:hover { border-color:var(--accent); }
+.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+.muted { color:var(--muted); }
+canvas { width:100%; height:220px; }
+.scroll { max-height:560px; overflow:auto; }
+.code { white-space:pre-wrap; word-break:break-all; background:var(--panel2); border-radius:6px; padding:10px; font-family:ui-monospace,Menlo,monospace; font-size:12px; }
+a { color:var(--accent); cursor:pointer; text-decoration:none; }
+a:hover { text-decoration:underline; }
+.pill { font-size:11px; padding:1px 7px; border:1px solid var(--line); border-radius:10px; color:var(--muted); margin-right:4px; }
+.suspect { border-left:3px solid var(--accent); padding:8px 12px; margin-bottom:8px; background:var(--panel2); border-radius:0 6px 6px 0; }
+.suspect.high { border-left-color:var(--err); }
+.suspect .score { float:right; font-weight:700; }
+.kv { display:grid; grid-template-columns:140px 1fr; gap:4px 12px; font-size:12.5px; }
+.kv .muted { color:var(--muted); }
+#toast { position:fixed; bottom:18px; right:18px; background:var(--panel2); border:1px solid var(--line); padding:10px 14px; border-radius:8px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Log<span>Scope</span></h1>
+  <div class="stats" id="topstats"></div>
+</header>
+<nav>
+  <button data-page="ingest" class="active">日志接入</button>
+  <button data-page="templates">模板库</button>
+  <button data-page="timeline">时间分布</button>
+  <button data-page="events">异常事件</button>
+  <button data-page="rootcause">根因线索</button>
+</nav>
+<main>
+  <!-- 日志接入 -->
+  <section class="page active" id="page-ingest">
+    <div class="panel">
+      <h3>接入方式</h3>
+      <div id="ingest-info" class="kv"></div>
+    </div>
+    <div class="row">
+      <div class="panel"><h3>已接入服务</h3><div id="svc-table-wrap"></div></div>
+      <div class="panel"><h3>总体吞吐（每分钟行数）</h3><canvas id="ingest-canvas"></canvas></div>
+    </div>
+  </section>
+
+  <!-- 模板库 -->
+  <section class="page" id="page-templates">
+    <div class="controls">
+      <select id="tpl-service"><option value="">全部服务</option></select>
+      <input id="tpl-q" placeholder="模板关键字过滤…" size=28>
+      <button class="btn" onclick="loadTemplates()">查询</button>
+      <span class="muted" id="tpl-count"></span>
+    </div>
+    <div class="panel scroll">
+      <table>
+        <thead><tr><th>次数</th><th>级别</th><th>服务</th><th>模板</th><th>版本</th><th>血缘</th><th>最近出现</th></tr></thead>
+        <tbody id="tpl-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 时间分布 -->
+  <section class="page" id="page-timeline">
+    <div class="controls">
+      <select id="tl-service"><option value="">全部服务</option></select>
+      <select id="tl-template"><option value="">总体</option></select>
+      <button class="btn" onclick="loadTimeline()">刷新</button>
+    </div>
+    <div class="panel"><h3>每分钟日志量</h3><canvas id="tl-canvas"></canvas></div>
+    <div class="panel"><h3>Top 模板时间序列</h3><canvas id="tl-stack-canvas"></canvas></div>
+  </section>
+
+  <!-- 异常事件 -->
+  <section class="page" id="page-events">
+    <div class="controls">
+      <select id="ev-service"><option value="">全部服务</option></select>
+      <select id="ev-kind">
+        <option value="">全部类型</option>
+        <option value="spike">突增</option>
+        <option value="drop">骤降</option>
+        <option value="new_template">新模板</option>
+      </select>
+      <button class="btn" onclick="loadEvents()">刷新</button>
+    </div>
+    <div class="panel scroll">
+      <table>
+        <thead><tr><th>时间</th><th>类型</th><th>服务</th><th>级别</th><th>模板</th><th>观测/基线</th><th>根因</th></tr></thead>
+        <tbody id="ev-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 根因 -->
+  <section class="page" id="page-rootcause">
+    <div class="controls">
+      <select id="rc-event"></select>
+      <button class="btn" onclick="loadRootCause()">分析</button>
+    </div>
+    <div class="panel"><h3>推理过程</h3><div id="rc-reasoning"></div></div>
+    <div class="row">
+      <div class="panel"><h3>可疑模板排序</h3><div id="rc-suspects"></div></div>
+      <div class="panel"><h3>窗口内各服务变化</h3><div id="rc-activity"></div></div>
+    </div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmtTs = ms => { const d=new Date(ms); return d.toLocaleString('zh-CN',{hour12:false})+'.'+String(d.getMilliseconds()).padStart(3,'0'); };
+const esc = s => String(s??'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(path){ const r = await fetch(path); if(!r.ok) throw new Error(path+' -> '+r.status); return r.json(); }
+function toast(m){ const t=$('#toast'); t.textContent=m; t.style.display='block'; setTimeout(()=>t.style.display='none',2500); }
+
+// ---------- minimal canvas line chart ----------
+function lineChart(canvas, series, opts={}){
+  const dpr = window.devicePixelRatio||1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  canvas.width = w*dpr; canvas.height = h*dpr;
+  const ctx = canvas.getContext('2d'); ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,w,h);
+  const all = series.flatMap(s=>s.points.map(p=>p[1]));
+  if(!all.length){ ctx.fillStyle='#8595b3'; ctx.fillText('暂无数据',10,24); return; }
+  const xs = series[0].points.map(p=>p[0]);
+  const x0=44,x1=w-10,y0=14,y1=h-22;
+  const maxV = Math.max(...all,1), minX=Math.min(...xs), maxX=Math.max(...xs,minX+1);
+  ctx.strokeStyle='#2a3550'; ctx.lineWidth=1; ctx.beginPath();
+  for(let i=0;i<=4;i++){ const y=y1-(y1-y0)*i/4; ctx.moveTo(x0,y); ctx.lineTo(x1,y); }
+  ctx.stroke();
+  ctx.fillStyle='#8595b3'; ctx.font='10px monospace'; ctx.textAlign='right';
+  for(let i=0;i<=4;i++){ const v=maxV*i/4; const y=y1-(y1-y0)*i/4; ctx.fillText(v>=1000?(v/1000).toFixed(1)+'k':v.toFixed(0), x0-5, y+3); }
+  const X = x => x0+(x-minX)/(maxX-minX)*(x1-x0);
+  const Y = v => y1-v/maxV*(y1-y0);
+  const colors=['#4f8cff','#ff5d6c','#3ecf8e','#f5a623','#a78bfa','#22d3ee','#f472b6'];
+  series.forEach((s,si)=>{
+    ctx.strokeStyle=colors[si%colors.length]; ctx.lineWidth=1.6; ctx.beginPath();
+    s.points.forEach((p,i)=>{ const x=X(p[0]),y=Y(p[1]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    ctx.stroke();
+    if(opts.area){ ctx.lineTo(X(s.points.at(-1)[0]),y1); ctx.lineTo(X(s.points[0][0]),y1); ctx.closePath();
+      ctx.fillStyle=colors[si%colors.length]+'22'; ctx.fill(); }
+  });
+  ctx.fillStyle='#8595b3'; ctx.textAlign='center';
+  ctx.fillText(new Date(minX).toLocaleTimeString('zh-CN',{hour12:false}), x0, h-6);
+  ctx.fillText(new Date(maxX).toLocaleTimeString('zh-CN',{hour12:false}), x1, h-6);
+}
+
+// ---------- overview / ingest ----------
+async function loadOverview(){
+  const o = await api('/api/overview');
+  $('#topstats').innerHTML = [
+    ['总行数',o.total_records.toLocaleString()],
+    ['模板数',o.total_templates],
+    ['事件(1h)',o.events_last_hour],
+    ['速率',Math.round(o.ingest_rate_per_sec).toLocaleString()+'/s'],
+    ['分片',o.shards],
+  ].map(([k,v])=>`<div class="stat"><b>${v}</b><small>${k}</small></div>`).join('');
+  $('#ingest-info').innerHTML = `
+    <div class="muted">TCP 采集端口</div><div class="mono">nc ${location.hostname} ${(o.tcp_addr||'0.0.0.0:5050').split(':')[1]} < app.log</div>
+    <div class="muted">状态快照目录</div><div class="mono">${esc(o.state_dir)}</div>
+    <div class="muted">已接入服务</div><div>${o.active_services.map(s=>`<span class="pill">${esc(s)}</span>`).join('')||'-'}</div>
+    <div class="muted">启动时间</div><div>${fmtTs(o.started_at_ms)}</div>`;
+  const svcs = await api('/api/services');
+  $('#svc-table-wrap').innerHTML = `<table><thead><tr><th>服务</th><th>模板</th><th>事件</th></tr></thead><tbody>${
+    svcs.map(s=>`<tr><td>${esc(s.service)}</td><td>${s.templates}</td><td>${s.events}</td></tr>`).join('')
+  }</tbody></table>`;
+  const ts = await api('/api/timeseries');
+  lineChart($('#ingest-canvas'),[{points:ts.totals}],{area:true});
+  // keep service filters in sync
+  fillServiceSelects(o.active_services);
+}
+function fillServiceSelects(services){
+  ['#tpl-service','#tl-service','#ev-service'].forEach(sel=>{
+    const cur=$(sel).value;
+    $(sel).innerHTML='<option value="">全部服务</option>'+services.map(s=>`<option ${s===cur?'selected':''}>${esc(s)}</option>`).join('');
+  });
+}
+
+// ---------- templates ----------
+async function loadTemplates(){
+  const svc=$('#tpl-service').value, q=$('#tpl-q').value;
+  const tpls = await api(`/api/templates?limit=1000${svc?'&service='+encodeURIComponent(svc):''}${q?'&q='+encodeURIComponent(q):''}`);
+  $('#tpl-count').textContent=`${tpls.length} 个模板`;
+  $('#tpl-body').innerHTML = tpls.map(t=>`
+    <tr>
+      <td>${t.count}</td>
+      <td><span class="badge b-${t.level}">${t.level}</span></td>
+      <td>${esc(t.service)}</td>
+      <td class="mono"><a onclick="showTemplate('${t.template_id}')">${esc(t.text)}</a>
+        <div class="muted" style="font-size:11px">${esc(t.template_id)} · 样例: ${esc((t.samples[0]||'').slice(0,140))}</div></td>
+      <td>${t.versions.map(v=>`<span class="pill">${esc(v)}</span>`).join('')}</td>
+      <td>${t.lineage.map(l=>`<span class="pill" title="sim=${l.similarity}">${l.kind} ${l.other_template_id}</span>`).join('')||'-'}</td>
+      <td>${fmtTs(t.last_seen_ms)}</td>
+    </tr>`).join('');
+}
+async function showTemplate(id){
+  const d = await api('/api/template/'+id);
+  const t=d.template;
+  const lines = t.samples.map(s=>`<div class="code">${esc(s)}</div>`).join('');
+  const metrics = d.metrics.map(m=>`<div class="panel"><h3>数值变量 #${m.position} · p95=${m.p95?.toFixed?.(2)??'-'}</h3>
+    <canvas data-metric='${JSON.stringify(m.points).replaceAll("'","&#39;")}' class="metric-canvas"></canvas></div>`).join('');
+  const w=window.open('','_blank','width=900,height=700');
+  w.document.write(`<title>模板 ${id}</title><body style="background:#0f1420;color:#dbe4f5;font-family:sans-serif;padding:20px">
+    <h2 style="font-family:monospace">${esc(t.text)}</h2>
+    <div class="kv">
+      <span>服务</span><span>${esc(t.service)}</span>
+      <span>级别</span><span>${t.level}</span>
+      <span>版本</span><span>${t.versions.join(', ')}</span>
+      <span>总量</span><span>${t.count}</span>
+      <span>血缘</span><span>${t.lineage.map(l=>l.kind+' '+l.other_template_id+' ('+l.similarity+')').join('; ')||'无'}</span>
+    </div>
+    <h3>样例日志</h3>${lines}
+    <h3>数值变量趋势</h3>${metrics||'<p class="muted">无数值变量</p>'}
+    <script>
+      document.querySelectorAll('.metric-canvas').forEach(c=>{
+        const pts=JSON.parse(c.dataset.metric);
+        const dpr=window.devicePixelRatio||1; const W=c.clientWidth||820,H=200; c.width=W*dpr;c.height=H*dpr;
+        const x=c.getContext('2d');x.scale(dpr,dpr);
+        const max=Math.max(...pts.map(p=>p[1].max),1), x0=40,x1=W-10,y0=10,y1=H-20;
+        const X=i=>x0+i/(pts.length-1||1)*(x1-x0), Y=v=>y1-v/max*(y1-y0);
+        x.strokeStyle='#4f8cff';x.beginPath();
+        pts.forEach((p,i)=>{const v=p[1].sum/p[1].count;i?x.lineTo(X(i),Y(v)):x.moveTo(X(i),Y(v));});x.stroke();
+        x.strokeStyle='#ff5d6c55';x.beginPath();
+        pts.forEach((p,i)=>{i?x.lineTo(X(i),Y(p[1].max)):x.moveTo(X(i),Y(p[1].max));});x.stroke();
+        x.fillStyle='#8595b3';x.fillText('蓝=均值 红=峰值',x0,H-4);
+      });
+    <\/script></body>`);
+}
+
+// ---------- timeline ----------
+async function loadTimeline(){
+  const svc=$('#tl-service').value, tpl=$('#tl-template').value;
+  const d = await api(`/api/timeseries?${svc?'service='+encodeURIComponent(svc):''}${tpl?'&template_id='+encodeURIComponent(tpl):''}`);
+  lineChart($('#tl-canvas'),[{points:d.totals}],{area:true});
+  const entries=Object.entries(d.templates)
+    .map(([id,pts])=>({id,pts,total:pts.reduce((a,p)=>a+p[1],0)}))
+    .sort((a,b)=>b.total-a.total).slice(0,6);
+  lineChart($('#tl-stack-canvas'), entries.map(e=>({points:e.pts})));
+  // populate template selector
+  const sel=$('#tl-template'); const keep=sel.value;
+  sel.innerHTML='<option value="">总体</option>'+entries.map(e=>`<option value="${e.id}" ${e.id===keep?'selected':''}>${e.id} (${e.total})</option>`).join('');
+}
+
+// ---------- events ----------
+async function loadEvents(){
+  const svc=$('#ev-service').value, kind=$('#ev-kind').value;
+  const evs = await api(`/api/events?limit=300${svc?'&service='+encodeURIComponent(svc):''}${kind?'&kind='+kind:''}`);
+  $('#ev-body').innerHTML = evs.map(e=>`
+    <tr>
+      <td class="mono">${fmtTs(e.ts_ms)}</td>
+      <td><span class="badge b-${e.kind}">${({spike:'突增',drop:'骤降',new_template:'新模板'})[e.kind]}</span></td>
+      <td>${esc(e.service)}</td>
+      <td><span class="badge b-${e.level}">${e.level}</span></td>
+      <td class="mono" style="max-width:380px">${esc(e.template_text)}<div class="muted" style="font-size:11px">${esc(e.template_id)} · ${esc(e.detail)}</div></td>
+      <td>${e.observed.toFixed(1)} / ${e.baseline.toFixed(1)}</td>
+      <td><a onclick="gotoRootCause(${e.id})">分析 →</a></td>
+    </tr>`).join('');
+  const rcSel=$('#rc-event');
+  rcSel.innerHTML = evs.slice(0,100).map(e=>`<option value="${e.id}">${fmtTs(e.ts_ms)} ${e.service} ${({spike:'突增',drop:'骤降',new_template:'新'})[e.kind]}</option>`).join('');
+}
+function gotoRootCause(id){
+  document.querySelector('nav button[data-page=rootcause]').click();
+  $('#rc-event').value=id; loadRootCause();
+}
+
+// ---------- root cause ----------
+async function loadRootCause(){
+  const id=$('#rc-event').value; if(!id){ toast('请先选择事件'); return; }
+  const r = await api('/api/rootcause/'+id);
+  $('#rc-reasoning').innerHTML = r.reasoning.map(x=>`<div style="margin-bottom:6px">• ${esc(x)}</div>`).join('');
+  $('#rc-suspects').innerHTML = r.suspects.map((s,i)=>`
+    <div class="suspect ${i<3?'high':''}">
+      <span class="score">score ${s.score.toFixed(1)}</span>
+      <div><b>${esc(s.service)}</b> <span class="mono muted">${esc(s.template_id)}</span>
+        ${s.kinds.map(k=>`<span class="badge b-${k}">${({spike:'突增',drop:'骤降',new_template:'新模板'})[k]||k}</span>`).join(' ')}
+        <span class="badge b-${s.max_severity}">${s.max_severity}</span></div>
+      <div class="mono" style="margin:6px 0">${esc(s.template_text)}</div>
+      <div class="muted" style="font-size:11.5px">${esc(s.explanation)}</div>
+    </div>`).join('') || '<p class="muted">窗口内无关联变化</p>';
+  $('#rc-activity').innerHTML = `<table><thead><tr><th>服务</th><th>突增</th><th>骤降</th><th>新模板</th><th>错误级</th></tr></thead><tbody>${
+    r.service_activity.map(a=>`<tr><td>${esc(a.service)}</td><td>${a.spikes}</td><td>${a.drops}</td><td>${a.new_templates}</td><td>${a.error_events}</td></tr>`).join('')
+  }</tbody></table>`;
+}
+
+// ---------- nav + auto refresh ----------
+document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active'); $('#page-'+b.dataset.page).classList.add('active');
+  ({ingest:loadOverview,templates:loadTemplates,timeline:loadTimeline,events:loadEvents,rootcause:loadEvents})[b.dataset.page]?.();
+});
+$('#tpl-q').addEventListener('keydown',e=>{if(e.key==='Enter')loadTemplates();});
+loadOverview(); loadTemplates(); loadEvents();
+setInterval(()=>{ const active=document.querySelector('.page.active').id.slice(5);
+  if(active==='ingest')loadOverview(); else if(active==='events')loadEvents(); else if(active==='timeline')loadTimeline(); },15000);
+</script>
+</body>
+</html>
